@@ -1,0 +1,64 @@
+{
+  "name": "sdk-cloud",
+  "version": "0.1.0",
+  "description": "Client-side encryption for S3-compatible storage using libsodium XChaCha20-Poly1305 secretstream",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node --external @aws-sdk/client-s3 --external @aws-sdk/s3-request-presigner && bun x tsc --emitDeclarationOnly",
+    "typecheck": "bun check",
+    "test": "bunx vitest run",
+    "test:watch": "bunx vitest",
+    "test:coverage": "bunx vitest run --coverage",
+    "test:integration": "bunx vitest run src/integration-r2.test.ts",
+    "test:unit": "bunx vitest run src/*.test.ts",
+    "lint": "bunx biome check --write .",
+    "prepublishOnly": "bun run typecheck && bun run build && bun run test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1175.0",
+    "@aws-sdk/s3-request-presigner": "^3.1175.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2",
+    "@types/bun": "latest",
+    "@vitest/coverage-v8": "^5.1.1",
+    "libsodium-wrappers": "0.8.4",
+    "vitest": "^5.1.1"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "bun": ">=1.0.0"
+  },
+  "license": "MIT",
+  "keywords": [
+    "encryption",
+    "s3",
+    "cloudflare-r2",
+    "client-side",
+    "xchacha20",
+    "secretstream"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/airshakur88/shtora.cluod.git",
+    "directory": "sdk-cloud"
+  }
+}
