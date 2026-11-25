@@ -1,7 +1,7 @@
 {
-  "name": "sdk-cloud",
+  "name": "@shtora/s3poly",
   "version": "0.1.0",
-  "description": "Client-side encryption for S3-compatible storage using libsodium XChaCha20-Poly1305 secretstream",
+  "description": "Client-side XChaCha20-Poly1305 encryption for S3-compatible object storage. Built by shtora — data is encrypted in your process before it ever reaches the server. The storage backend never sees plaintext or the encryption key.",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",
@@ -54,11 +54,16 @@
     "cloudflare-r2",
     "client-side",
     "xchacha20",
-    "secretstream"
+    "secretstream",
+    "libsodium",
+    "s3-encryption",
+    "r2-storage",
+    "data-at-rest",
+    "shtora"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/airshakur88/shtora.cluod.git",
-    "directory": "sdk-cloud"
+    "url": "https://github.com/airshakur88/shtora.cloud.git",
+    "directory": "s3poly"
   }
 }

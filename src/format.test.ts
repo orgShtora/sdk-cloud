@@ -19,7 +19,7 @@ function makeHeader(length: number): Uint8Array {
   return h;
 }
 
-describe("sdk-cloud format", () => {
+describe("@shtora/s3poly format", () => {
   beforeEach(async () => {
     await initSodium();
   });

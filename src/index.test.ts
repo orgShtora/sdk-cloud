@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as sdk from "./index.js";
 
-describe("sdk-cloud public exports", () => {
+describe("@shtora/s3poly public exports", () => {
   it("exports error classes", () => {
     expect(typeof sdk.AuthenticationError).toBe("function");
     expect(typeof sdk.FormatError).toBe("function");

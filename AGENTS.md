@@ -1,4 +1,4 @@
-# sdk-cloud
+# @shtora/s3poly
 
 ## OVERVIEW
 

@@ -8,7 +8,7 @@ const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
 const R2_BUCKET = process.env.R2_BUCKET;
 
-describe("sdk-cloud R2 integration", () => {
+describe("@shtora/s3poly R2 integration", () => {
   const credsOk = Boolean(R2_ACCOUNT_ID && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R2_BUCKET);
   const runIfCreds = credsOk ? it : it.skip;
 
@@ -35,7 +35,7 @@ describe("sdk-cloud R2 integration", () => {
   });
 
   runIfCreds("upload and download small file through full pipeline", async () => {
-    const data = new TextEncoder().encode("Hello from sdk-cloud R2 integration test!");
+    const data = new TextEncoder().encode("Hello from @shtora/s3poly R2 integration test!");
     const key = new Uint8Array(32);
     for (let i = 0; i < key.length; i++) key[i] = i;
 
@@ -61,7 +61,7 @@ describe("sdk-cloud R2 integration", () => {
     // Decrypt
     const result = decryptSync(downloadedBytes, key);
     expect(new TextDecoder().decode(result.plaintext)).toBe(
-      "Hello from sdk-cloud R2 integration test!",
+      "Hello from @shtora/s3poly R2 integration test!",
     );
 
     // Cleanup

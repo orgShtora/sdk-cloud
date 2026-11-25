@@ -23,7 +23,7 @@ function makeKey(): Uint8Array {
   return key;
 }
 
-describe("sdk-cloud crypto", () => {
+describe("@shtora/s3poly crypto", () => {
   beforeEach(async () => {
     await initSodium();
   });
