@@ -1,6 +1,13 @@
 import sodium from "libsodium-wrappers";
+import { nextWithSignal } from "./async.js";
 import type { CryptoOptions, DecryptedMetadata } from "./types.js";
 import { AbortError, AuthenticationError, FormatError } from "./types.js";
+import {
+  WIRE_LENGTH_PREFIX_SIZE,
+  WIRE_MAGIC_BYTES,
+  WIRE_MAX_RECORD_BYTES,
+  WIRE_VERSION_V1,
+} from "./wire.js";
 
 let _headerBytes = 0;
 let _keyBytes = 0;
@@ -20,10 +27,22 @@ export function initSodium(): Promise<void> {
     _tagFinal = sodium.crypto_secretstream_xchacha20poly1305_TAG_FINAL;
     _preambleLength = 5 + _headerBytes;
 
-    _maxRecordBytes = 1024 * 1024;
+    _maxRecordBytes = WIRE_MAX_RECORD_BYTES;
 
     _maxChunkBytes = _maxRecordBytes - _abytes;
   });
+}
+
+function ensureSodiumReady(): void {
+  if (_keyBytes === 0) {
+    throw new Error("libsodium is not initialized; call and await initSodium() first");
+  }
+}
+
+function validateKeyLength(key: Uint8Array): void {
+  if (key.length !== _keyBytes) {
+    throw new RangeError(`Key must be ${_keyBytes} bytes`);
+  }
 }
 
 export function isSodiumReady(): boolean {
@@ -66,7 +85,7 @@ function buildRecordAdWithCallerAd(
 ): Uint8Array {
   const baseLen = preamble.length;
   const callerAdLen = adBuf?.length ?? 0;
-  const out = new Uint8Array(callerAdLen + baseLen + 4);
+  const out = new Uint8Array(callerAdLen + baseLen + WIRE_LENGTH_PREFIX_SIZE);
   if (callerAdLen > 0) out.set(adBuf!, 0);
   out.set(preamble, callerAdLen);
   writeU32BE(out, callerAdLen + baseLen, position);
@@ -104,16 +123,17 @@ export async function* encrypt(
     throw new RangeError("maxChunkSize must be a positive integer");
   }
 
-  const key = await options.keyProvider.generateKey();
   await initSodium();
+  const key = await options.keyProvider.generateKey();
+  validateKeyLength(key);
 
   const pushResult = sodium.crypto_secretstream_xchacha20poly1305_init_push(key);
   const state = pushResult.state;
   const header = asUint8Array(pushResult.header);
 
   const preamble = new Uint8Array(_preambleLength);
-  preamble.set([0x53, 0x4b, 0x44, 0x43], 0);
-  preamble[4] = 0x01;
+  preamble.set(WIRE_MAGIC_BYTES, 0);
+  preamble[4] = WIRE_VERSION_V1;
   preamble.set(header, 5);
   yield preamble;
 
@@ -122,33 +142,47 @@ export async function* encrypt(
   const ad = options.ad;
   let position = 0;
 
-  for await (const chunk of input) {
-    if (options.signal?.aborted) throw new AbortError();
-
-    let offset = 0;
-    while (offset < chunk.length) {
+  const iterator = input[Symbol.asyncIterator]();
+  let completed = false;
+  try {
+    while (true) {
+      const next = await nextWithSignal(iterator, options.signal);
+      if (next.done) {
+        completed = true;
+        break;
+      }
+      const chunk = next.value;
       if (options.signal?.aborted) throw new AbortError();
 
-      const remaining = chunk.length - offset;
-      const take = Math.min(remaining, maxChunkSize);
-      const msg = chunk.subarray(offset, offset + take);
+      let offset = 0;
+      while (offset < chunk.length) {
+        if (options.signal?.aborted) throw new AbortError();
 
-      const recordAd = buildRecordAdWithCallerAd(preamble, position, ad);
-      const ct = sodium.crypto_secretstream_xchacha20poly1305_push(
-        state,
-        msg,
-        recordAd,
-        _tagMessage,
-      );
-      if (!ct) throw new AuthenticationError("Encryption push returned null");
+        const remaining = chunk.length - offset;
+        const take = Math.min(remaining, maxChunkSize);
+        const msg = chunk.subarray(offset, offset + take);
 
-      const ctArr = asUint8Array(ct);
-      const lenPrefix = new Uint8Array(4 + ctArr.length);
-      writeU32BE(lenPrefix, 0, ctArr.length);
-      lenPrefix.set(ctArr, 4);
-      yield lenPrefix;
-      position += msg.length;
-      offset += take;
+        const recordAd = buildRecordAdWithCallerAd(preamble, position, ad);
+        const ct = sodium.crypto_secretstream_xchacha20poly1305_push(
+          state,
+          msg,
+          recordAd,
+          _tagMessage,
+        );
+        if (!ct) throw new AuthenticationError("Encryption push returned null");
+
+        const ctArr = asUint8Array(ct);
+        const lenPrefix = new Uint8Array(WIRE_LENGTH_PREFIX_SIZE + ctArr.length);
+        writeU32BE(lenPrefix, 0, ctArr.length);
+        lenPrefix.set(ctArr, WIRE_LENGTH_PREFIX_SIZE);
+        yield lenPrefix;
+        position += msg.length;
+        offset += take;
+      }
+    }
+  } finally {
+    if (!completed) {
+      void Promise.resolve(iterator.return?.()).catch(() => undefined);
     }
   }
 
@@ -165,9 +199,9 @@ export async function* encrypt(
     if (!ct) throw new AuthenticationError("TAG_FINAL push returned null");
 
     const ctArr = asUint8Array(ct);
-    const lenPrefix = new Uint8Array(4 + ctArr.length);
+    const lenPrefix = new Uint8Array(WIRE_LENGTH_PREFIX_SIZE + ctArr.length);
     writeU32BE(lenPrefix, 0, ctArr.length);
-    lenPrefix.set(ctArr, 4);
+    lenPrefix.set(ctArr, WIRE_LENGTH_PREFIX_SIZE);
     yield lenPrefix;
   }
 }
@@ -177,17 +211,16 @@ export function encryptSync(
   key: Uint8Array,
   ad?: Uint8Array,
 ): { preamble: Uint8Array; ciphertext: Uint8Array } {
-  if (key.length !== _keyBytes) {
-    throw new Error(`Key must be ${_keyBytes} bytes`);
-  }
+  ensureSodiumReady();
+  validateKeyLength(key);
 
   const pushResult = sodium.crypto_secretstream_xchacha20poly1305_init_push(key);
   const state = pushResult.state;
   const header = asUint8Array(pushResult.header);
 
   const preamble = new Uint8Array(_preambleLength);
-  preamble.set([0x53, 0x4b, 0x44, 0x43], 0);
-  preamble[4] = 0x01;
+  preamble.set(WIRE_MAGIC_BYTES, 0);
+  preamble[4] = WIRE_VERSION_V1;
   preamble.set(header, 5);
 
   const allChunks: Uint8Array[] = [];
@@ -205,9 +238,9 @@ export function encryptSync(
     if (!ct) throw new AuthenticationError("Encryption push failed");
 
     const ctArr = asUint8Array(ct);
-    const lenPrefix = new Uint8Array(4 + ctArr.length);
+    const lenPrefix = new Uint8Array(WIRE_LENGTH_PREFIX_SIZE + ctArr.length);
     writeU32BE(lenPrefix, 0, ctArr.length);
-    lenPrefix.set(ctArr, 4);
+    lenPrefix.set(ctArr, WIRE_LENGTH_PREFIX_SIZE);
     allChunks.push(lenPrefix);
     position += msg.length;
     offset += take;
@@ -225,9 +258,9 @@ export function encryptSync(
     if (!ct) throw new AuthenticationError("TAG_FINAL push failed");
 
     const ctArr = asUint8Array(ct);
-    const lenPrefix = new Uint8Array(4 + ctArr.length);
+    const lenPrefix = new Uint8Array(WIRE_LENGTH_PREFIX_SIZE + ctArr.length);
     writeU32BE(lenPrefix, 0, ctArr.length);
-    lenPrefix.set(ctArr, 4);
+    lenPrefix.set(ctArr, WIRE_LENGTH_PREFIX_SIZE);
     allChunks.push(lenPrefix);
   }
 
@@ -245,24 +278,20 @@ export function decryptSync(
   key: Uint8Array,
   ad?: Uint8Array,
 ): { plaintext: Uint8Array; metadata: DecryptedMetadata } {
-  if (key.length !== _keyBytes) {
-    throw new Error(`Key must be ${_keyBytes} bytes`);
-  }
+  ensureSodiumReady();
+  validateKeyLength(key);
   if (encrypted.length < _preambleLength) {
     throw new FormatError("Encrypted data too short for preamble");
   }
 
-  if (
-    encrypted[0] !== 0x53 ||
-    encrypted[1] !== 0x4b ||
-    encrypted[2] !== 0x44 ||
-    encrypted[3] !== 0x43
-  ) {
-    throw new FormatError("Invalid preamble: expected SDKC");
+  for (let i = 0; i < WIRE_MAGIC_BYTES.length; i++) {
+    if (encrypted[i] !== WIRE_MAGIC_BYTES[i]) {
+      throw new FormatError("Invalid preamble: expected SKDC");
+    }
   }
-  if (encrypted[4] !== 0x01) {
+  if (encrypted[4] !== WIRE_VERSION_V1) {
     throw new FormatError(
-      `Unsupported version: expected 0x01, got 0x${encrypted[4]!.toString(16)}`,
+      `Unsupported version: expected 0x${WIRE_VERSION_V1.toString(16)}, got 0x${encrypted[4]!.toString(16)}`,
     );
   }
 
@@ -278,8 +307,8 @@ export function decryptSync(
   let finalTagged = false;
 
   while (offset < rest.length) {
-    if (offset + 4 > rest.length) {
-      if (finalTagged) break;
+    if (finalTagged) throw new FormatError("Trailing bytes after TAG_FINAL");
+    if (offset + WIRE_LENGTH_PREFIX_SIZE > rest.length) {
       throw new FormatError("Truncated length prefix before TAG_FINAL");
     }
 
@@ -289,7 +318,7 @@ export function decryptSync(
         (rest[offset + 2]! << 8) |
         rest[offset + 3]!) >>>
       0;
-    offset += 4;
+    offset += WIRE_LENGTH_PREFIX_SIZE;
 
     if (len > _maxRecordBytes) {
       throw new FormatError(`Record too large: ${len} bytes`);

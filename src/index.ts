@@ -37,6 +37,7 @@ export type {
   DownloadInput,
   KeyProvider,
   MultipartConfig,
+  PresignedUploadInput,
   S3Config,
   S3Credentials,
   UploadInput,

@@ -282,7 +282,6 @@ describe("s3 module", () => {
     const url = await createPresignedUploadUrl(client, {
       bucket: BUCKET,
       key: KEY,
-      body: new Uint8Array(0),
     });
 
     expect(typeof url).toBe("string");
@@ -306,7 +305,7 @@ describe("s3 module", () => {
     const client = makeMockClient([]);
     await createPresignedUploadUrl(
       client,
-      { bucket: BUCKET, key: KEY, body: new Uint8Array(0) },
+      { bucket: BUCKET, key: KEY },
       900,
     );
 
@@ -333,7 +332,6 @@ describe("s3 module", () => {
       createPresignedUploadUrl(client, {
         bucket: BUCKET,
         key: KEY,
-        body: new Uint8Array(0),
       }),
     ).rejects.toThrow(StorageError);
   });
@@ -398,7 +396,7 @@ describe("s3 module", () => {
     const result = await upload(client, {
       bucket: BUCKET,
       key: KEY,
-      body: streamBody as unknown as Uint8Array,
+      body: streamBody as AsyncIterable<Uint8Array>,
     });
 
     expect(result.etag).toBe("stream-put");
@@ -424,7 +422,7 @@ describe("s3 module", () => {
         {
           bucket: BUCKET,
           key: KEY,
-          body: streamBody as unknown as Uint8Array,
+          body: streamBody as AsyncIterable<Uint8Array>,
           signal: controller.signal,
         },
         { minPartSize: MIN_PART_SIZE },
@@ -459,7 +457,7 @@ describe("s3 module", () => {
         {
           bucket: BUCKET,
           key: KEY,
-          body: streamBody as unknown as Uint8Array,
+          body: streamBody as AsyncIterable<Uint8Array>,
           signal: controller.signal,
         },
         { minPartSize: MIN_PART_SIZE },
@@ -467,14 +465,12 @@ describe("s3 module", () => {
     ).rejects.toThrow(AbortError);
   });
 
-  it("download supports Node Readable fallback when body has no Symbol.asyncIterator", async () => {
+  it("download consumes a Node Readable async iterator", async () => {
     const nodeBody = {
-      read: () => {
-        const data = nodeBody.buf;
-        if (data.length === 0) return null;
-        return data.shift();
+      [Symbol.asyncIterator]: async function* () {
+        yield new Uint8Array([9, 8, 7]);
+        yield new Uint8Array([6]);
       },
-      buf: [new Uint8Array([9, 8, 7]), new Uint8Array([6])],
     };
 
     const client = makeMockClient([{ Body: nodeBody }]);
@@ -500,11 +496,10 @@ describe("s3 module", () => {
     });
   });
 
-  it("upload simple PUT returns empty etag when response omits ETag", async () => {
+  it("upload rejects a simple PUT response without an ETag", async () => {
     const body = new Uint8Array(1024);
     const client = makeMockClient([{}]);
-    const result = await upload(client, { bucket: BUCKET, key: KEY, body });
-    expect(result.etag).toBe("");
+    await expect(upload(client, { bucket: BUCKET, key: KEY, body })).rejects.toThrow(StorageError);
   });
 
   it("download passes a Range header when a range with end is given", async () => {
@@ -521,30 +516,32 @@ describe("s3 module", () => {
     expect(cmdArgs.Range).toBe("bytes=5-");
   });
 
-  it("upload multipart returns empty etag for a part when the server omits ETag", async () => {
+  it("upload rejects a multipart part response without an ETag", async () => {
     const body = new Uint8Array(MIN_PART_SIZE + 1);
     const client = makeMockClient([
       { UploadId: "mpu-noetag" },
       {},
       { ETag: '"p2"' },
-      { ETag: '"complete"' },
     ]);
-    const result = await upload(client, { bucket: BUCKET, key: KEY, body });
-    expect(result.etag).toBe("complete");
-    expect(UploadPartCommand).toHaveBeenCalledTimes(2);
+
+    await expect(upload(client, { bucket: BUCKET, key: KEY, body })).rejects.toThrow(StorageError);
+    expect(CompleteMultipartUploadCommand).not.toHaveBeenCalled();
+    expect(AbortMultipartUploadCommand).toHaveBeenCalled();
   });
 
-  it("upload multipart returns empty etag when CompleteMultipartUpload omits ETag", async () => {
+  it("upload rejects a multipart completion without an ETag", async () => {
     const body = new Uint8Array(MIN_PART_SIZE + 1);
     const client = makeMockClient([
       { UploadId: "mpu-no-complete-etag" },
       { ETag: '"p1"' },
       { ETag: '"p2"' },
       {},
+      {},
     ]);
-    const result = await upload(client, { bucket: BUCKET, key: KEY, body });
-    expect(result.etag).toBe("");
+
+    await expect(upload(client, { bucket: BUCKET, key: KEY, body })).rejects.toThrow(StorageError);
     expect(CompleteMultipartUploadCommand).toHaveBeenCalledTimes(1);
+    expect(AbortMultipartUploadCommand).toHaveBeenCalled();
   });
 
   it("createPresignedDownloadUrl passes a Range when a range with end is given", async () => {
@@ -573,7 +570,7 @@ describe("s3 module", () => {
     const result = await upload(client, {
       bucket: BUCKET,
       key: KEY,
-      body: streamBody as unknown as Uint8Array,
+      body: streamBody as AsyncIterable<Uint8Array>,
     });
     expect(result.etag).toBe("empty");
     expect(PutObjectCommand).toHaveBeenCalledTimes(1);
@@ -589,7 +586,7 @@ describe("s3 module", () => {
     const result = await upload(client, {
       bucket: BUCKET,
       key: KEY,
-      body: streamBody as unknown as Uint8Array,
+      body: streamBody as AsyncIterable<Uint8Array>,
     });
     expect(result.etag).toBe("one-chunk");
     expect(PutObjectCommand).toHaveBeenCalledTimes(1);

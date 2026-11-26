@@ -1,7 +1,7 @@
 {
   "name": "@shtora/s3poly",
   "version": "0.1.0",
-  "description": "Client-side XChaCha20-Poly1305 encryption for S3-compatible object storage. Built by shtora — data is encrypted in your process before it ever reaches the server. The storage backend never sees plaintext or the encryption key.",
+  "description": "Streaming XChaCha20-Poly1305 encryption and S3-compatible upload helpers using libsodium secretstream.",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",
@@ -15,18 +15,18 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "dist",
-    "src"
+    "dist"
   ],
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target node --external @aws-sdk/client-s3 --external @aws-sdk/s3-request-presigner && bun x tsc --emitDeclarationOnly",
     "typecheck": "bun check",
-    "test": "bunx vitest run",
-    "test:watch": "bunx vitest",
-    "test:coverage": "bunx vitest run --coverage",
+    "test": "bun run test:unit",
+    "test:watch": "bunx vitest src/crypto.test.ts src/format.test.ts src/index.test.ts src/s3.test.ts",
+    "test:coverage": "bunx vitest run --coverage src/crypto.test.ts src/format.test.ts src/index.test.ts src/s3.test.ts",
     "test:integration": "bunx vitest run src/integration-r2.test.ts",
-    "test:unit": "bunx vitest run src/*.test.ts",
-    "lint": "bunx biome check --write .",
+    "test:unit": "bunx vitest run src/crypto.test.ts src/format.test.ts src/index.test.ts src/s3.test.ts",
+    "lint": "bunx biome check .",
+    "format": "bunx biome format --write .",
     "prepublishOnly": "bun run typecheck && bun run build && bun run test"
   },
   "dependencies": {

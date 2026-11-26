@@ -89,7 +89,6 @@ describe("@shtora/s3poly crypto", () => {
 
     const keyProvider = {
       generateKey: async () => key,
-      resolveKey: async () => key,
     };
     const chunks: AsyncIterable<Uint8Array> = (async function* () {
       yield data;
@@ -116,7 +115,6 @@ describe("@shtora/s3poly crypto", () => {
 
     const keyProvider = {
       generateKey: async () => key,
-      resolveKey: async () => key,
     };
     const chunks: AsyncIterable<Uint8Array> = (async function* () {
       yield data;
@@ -257,7 +255,6 @@ describe("@shtora/s3poly crypto", () => {
     for await (const part of encrypt(chunks, {
       keyProvider: {
         generateKey: async () => key,
-        resolveKey: async () => key,
       },
     })) {
       yielded.push(part);
@@ -290,7 +287,6 @@ describe("@shtora/s3poly crypto", () => {
     const gen = encrypt(chunks, {
       keyProvider: {
         generateKey: async () => key,
-        resolveKey: async () => key,
       },
       signal: controller.signal,
     });
@@ -318,7 +314,6 @@ describe("@shtora/s3poly crypto", () => {
     for await (const part of encrypt(chunks, {
       keyProvider: {
         generateKey: async () => key,
-        resolveKey: async () => key,
       },
     })) {
       yielded.push(part);
@@ -339,7 +334,7 @@ describe("@shtora/s3poly crypto", () => {
       await expect(
         (async () => {
           for await (const _ of encrypt(chunks, {
-            keyProvider: { generateKey: async () => key, resolveKey: async () => key },
+            keyProvider: { generateKey: async () => key },
             maxChunkSize,
           })) {
           }
@@ -358,7 +353,7 @@ describe("@shtora/s3poly crypto", () => {
 
     const yielded: Uint8Array[] = [];
     for await (const part of encrypt(chunks, {
-      keyProvider: { generateKey: async () => key, resolveKey: async () => key },
+      keyProvider: { generateKey: async () => key },
       maxChunkSize: 10 * 1024 * 1024,
     })) {
       yielded.push(part);
@@ -384,7 +379,7 @@ describe("@shtora/s3poly crypto", () => {
     await expect(
       (async () => {
         for await (const part of encrypt(chunks, {
-          keyProvider: { generateKey: async () => key, resolveKey: async () => key },
+          keyProvider: { generateKey: async () => key },
           signal: controller.signal,
         })) {
           yielded.push(part);
@@ -466,7 +461,7 @@ describe("@shtora/s3poly crypto", () => {
     await expect(
       (async () => {
         for await (const part of encrypt(empty, {
-          keyProvider: { generateKey: async () => key, resolveKey: async () => key },
+          keyProvider: { generateKey: async () => key },
           signal: controller.signal,
         })) {
           yielded.push(part);

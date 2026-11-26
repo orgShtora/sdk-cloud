@@ -1,6 +1,6 @@
 # @shtora/s3poly
 
-Client-side XChaCha20-Poly1305 encryption for S3-compatible object storage. Built by shtora — data is encrypted in your process before it ever reaches the server. The storage backend never sees plaintext or the encryption key.
+Encrypt and authenticate data with libsodium secretstream, then store the ciphertext through an S3-compatible API. Your application supplies and manages the encryption key.
 
 ## Installation
 
@@ -14,7 +14,7 @@ bun add @shtora/s3poly @aws-sdk/client-s3
 
 ## Initialization
 
-Call `initSodium()` once at application startup. Crypto constants are unavailable until it resolves. All sync APIs (`encryptSync`, `decryptSync`) check these constants on entry and throw if they read zero.
+Call `initSodium()` once at application startup. Crypto constants are unavailable until it resolves. All sync APIs (`encryptSync`, `decryptSync`) require sodium initialization and throw a clear error if it has not completed.
 
 ```typescript
 import { initSodium } from "@shtora/s3poly";
@@ -27,76 +27,78 @@ Running this twice is harmless. Calling `initSodium()` is not required if you on
 ## Encrypt and Upload
 
 ```typescript
-import { encrypt, initSodium, createR2Client } from "@shtora/s3poly";
+import { createR2Client, encrypt, upload } from "@shtora/s3poly";
 
-const client = createR2Client(
-  "your-account-id",
-  { type: "static", accessKeyId: "...", secretAccessKey: "..." },
-);
+const client = createR2Client("your-account-id", {
+  type: "static",
+  accessKeyId: "...",
+  secretAccessKey: "...",
+});
 
 async function store(path: string, stream: AsyncIterable<Uint8Array>) {
-  const key = await crypto.getRandomValues(new Uint8Array(32));
-
-  const encrypted = encrypt(stream, {
-    keyProvider: {
-      generateKey: () => Promise.resolve(key),
-      resolveKey: () => Promise.resolve(key),
-    },
+  const key = crypto.getRandomValues(new Uint8Array(32));
+  const result = await upload(client, {
+    bucket: "my-bucket",
+    key: path,
+    body: encrypt(stream, {
+      keyProvider: { generateKey: async () => key },
+    }),
+    contentType: "application/octet-stream",
   });
 
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of encrypted) {
-    chunks.push(chunk);
-  }
-
-  return client.send(
-    new PutObjectCommand({
-      Bucket: "my-bucket",
-      Key: path,
-      Body: concat(chunks),
-    }),
-  );
+  // Persist this key through your key-management system, separately from the object.
+  return { result, key };
 }
 ```
 
-The `encrypt` function yields the preamble first (5 + HEADERBYTES bytes), then each length-prefixed ciphertext record. Concatenate all yields before sending, or stream them directly if the S3 client accepts an async iterable body.
+The encrypt generator yields the preamble and length-prefixed ciphertext records. For streamed bodies, upload reads only enough to choose single PUT or multipart, then sends multipart parts as it consumes the stream.
 
 ## Decrypt and Download
 
 ```typescript
-import { decryptSync, download } from "@shtora/s3poly";
+import type { S3Client } from "@aws-sdk/client-s3";
+import { concat, decryptSync, download } from "@shtora/s3poly";
 
-const { body, metadata } = await client.send(
-  new GetObjectCommand({ Bucket: "my-bucket", Key: path }),
-);
+async function restore(client: S3Client, path: string, key: Uint8Array) {
+  const { body } = await download(client, { bucket: "my-bucket", key: path });
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of body) chunks.push(chunk);
 
-const raw = concat([...body]);
-const { plaintext, metadata: cryptoMeta } = decryptSync(raw, key);
+  const encrypted = concat(chunks);
+  return decryptSync(encrypted, key);
+}
 ```
 
-`decryptSync` reads the preamble, validates version and magic bytes, then walks the record chain sequentially. It throws `FormatError` on structural issues and `AuthenticationError` if any byte was modified.
+download returns an async iterable of raw ciphertext. decryptSync requires the complete encrypted object in memory and throws FormatError for malformed framing or AuthenticationError if a record fails authentication.
 
 ## Large Files (Multipart Uploads)
 
-Use the standalone `upload` helper. It handles buffering, part splitting, concurrent workers, and abort cleanup automatically.
+The upload helper automatically selects multipart for larger payloads. Multipart size and concurrency belong in the third argument:
 
-```typescript
-import { upload, createR2Client } from "@shtora/s3poly";
+~~~typescript
+import type { S3Client } from "@aws-sdk/client-s3";
+import { upload } from "@shtora/s3poly";
 
-const result = await upload(client, {
-  bucket: "my-bucket",
-  key: "large-file.enc",
-  body: encryptedBody,
-  multipartConfig: {
-    minPartSize: 10 * 1024 * 1024, // default: 5 MiB
-    concurrency: 5,                // default: 5
-  },
-});
+async function storeLarge(
+  client: S3Client,
+  encryptedBody: AsyncIterable<Uint8Array>,
+) {
+  return await upload(
+    client,
+    {
+      bucket: "my-bucket",
+      key: "large-file.enc",
+      body: encryptedBody,
+    },
+    {
+      minPartSize: 10 * 1024 * 1024, // default: 5 MiB
+      concurrency: 5, // default: 5
+    },
+  );
+}
+~~~
 
-console.log(result.etag);
-```
-
-`upload` buffers streamed bodies entirely before deciding between single PUT and multipart. The part-split decision depends on total size, which an unconsumed stream cannot report. Lowering `minPartSize` reduces nothing in memory; it only changes how many parts get created.
+S3 requires multipart parts from 5 MiB to 5 GiB, allows at most 10,000 parts, and caps an object at 5 TiB. For streamed bodies, `minPartSize` is also the part size, so the maximum stream size is `min(5 TiB, minPartSize × 10,000)`. With the default 5 MiB part size, the cap is 50,000 MiB. Increase `minPartSize` to raise it. Stream upload memory is bounded by the configured part size, concurrency, and the size of chunks yielded by the source. `Uint8Array` uploads can use larger parts chosen from their known length.
 
 ## Presigned URLs
 
@@ -126,50 +128,57 @@ When you already hold the data in memory:
 ```typescript
 import { encryptSync, decryptSync, concat } from "@shtora/s3poly";
 
-// Encrypt
-const { preamble, ciphertext } = encryptSync(data, key, ad);
-const stored = concat([preamble, ciphertext]);
-
-// Decrypt
-const { plaintext, metadata } = decryptSync(stored, key, ad);
-console.log(metadata.byteLength); // BigInt
+function roundTrip(data: Uint8Array, key: Uint8Array, ad?: Uint8Array) {
+  const { preamble, ciphertext } = encryptSync(data, key, ad);
+  const stored = concat([preamble, ciphertext]);
+  const { plaintext, metadata } = decryptSync(stored, key, ad);
+  return { plaintext, byteLength: metadata.byteLength };
+}
 ```
 
 `ad` (additional authenticated data) binds arbitrary context into every record's authentication tag. Supplying the same `ad` value during decrypt is required; a mismatched `ad` triggers `AuthenticationError`. Omit it if you only need confidentiality plus integrity over the ciphertext itself.
+
+## Wire format V1
+
+The preamble is `SKDC` (4 bytes), version `0x01` (1 byte), and the libsodium secretstream header (24 bytes). It is followed by records encoded as a 4-byte big-endian ciphertext length and that many ciphertext bytes. Each data record uses `TAG_MESSAGE`; the stream ends with an authenticated empty `TAG_FINAL` record. Bytes after the final record are rejected.
+
+Each record's associated data is `caller AD || preamble || plaintext position`, where plaintext position is an unsigned 32-bit big-endian byte count that wraps after 2^32 bytes. Omitting caller AD removes the first component.
 
 ## Security Model
 
 **What this protects against:**
 - Server-side exposure of plaintext (the storage backend stores only ciphertext)
-- Tampering with stored objects (each record is individually authenticated with HMAC-SipHash via Poly1305)
+- Tampering with stored objects (each record has an XChaCha20-Poly1305 authentication tag)
 - Replay of individual records (AD binds position and preamble to each tag)
 
 **What this does not protect against:**
 - Metadata leakage (object size, content-type, key names remain visible)
 - Access control (you still need S3/R2 IAM policies to restrict who can list or delete objects)
-- Key management (this package generates and holds keys in process memory; rotating or escrowed keys require your own logic)
+- Key management (your key provider supplies the key; persistence, rotation, escrow, and access control are application responsibilities)
 - Range-request integrity (downloading a byte range returns raw ciphertext; decryption requires the full preamble and sequential state)
 
 **Algorithm parameters:**
 - Cipher: XChaCha20-Poly1305 (secretstream mode)
 - Key size: 32 bytes
 - Header size: 24 bytes (per-stream nonce)
-- Auth tag overhead: 16 bytes per record (ABYTES)
-- Max record plaintext: 1 MiB − 16 bytes
+- Secretstream overhead: 17 bytes per record (ABYTES: 1 tag byte + 16-byte Poly1305 MAC)
+- Max record plaintext: 1,048,559 bytes (1 MiB − 17 bytes)
 
 ## Limits
 
 | Constraint | Value | Notes |
 |---|---|---|
-| Max record plaintext | ~1 MiB − 16 B | Hardcoded; larger inputs split across records |
+| Max record plaintext | 1,048,559 B | Larger inputs split across records |
 | Position counter | 32-bit wrapped | On-wire positions overflow at 2^32 bytes (~4 GiB) |
-| Supported versions | V1 (0x01) | Preamble magic bytes: `SDKC` |
+| Supported versions | V1 (0x01) | Preamble magic bytes: `SKDC` |
 | Key size | 32 bytes | Other sizes throw at call time |
-| Multipart min part | 5 MiB default | Set explicitly to change; must be positive integer |
+| Multipart part size | 5 MiB to 5 GiB | Default is 5 MiB; part count is capped at 10,000 |
+| Multipart object size | 5 TiB | S3 service limit; streamed-body limit also depends on `minPartSize` and the 10,000-part cap |
+| Single PUT size | 5 GiB | Larger objects use multipart |
 
-## Node.js .read() fallback
+## Stream and memory behavior
 
-When the AWS SDK returns a Node.js `Readable` stream instead of an async iterable, `download` falls back to calling `.read()` repeatedly. A single `null` return ends iteration immediately. This is correct after the stream drains, but a temporary `null` (back-pressure pause) is treated as EOF. The uploaded byte count may differ from what was requested if the remote side sends fewer chunks than expected. Full-body downloads are unaffected because the SDK buffers internally; partial-range requests are where this edge case appears.
+Node.js Readable responses are consumed through their async iterator. The library does not use read() as an EOF check. Streamed uploads retain a bounded set of multipart buffers. `decryptSync` still buffers the complete ciphertext and plaintext; use it when that memory cost fits your workload.
 
 ## Error Classes
 
@@ -181,10 +190,10 @@ import { AuthenticationError, FormatError, AbortError, StorageError } from "@sht
 
 | Error | When it throws |
 |---|---|
-| `AuthenticationError` | Ciphertext failedPoly1305 verification; data was modified or the wrong key/AD was used |
-| `FormatError` | Bad preamble magic, unsupported version, truncated record, oversized length prefix, non-final message after TAG_FINAL |
-| `AbortError` | The provided `AbortSignal` fired during encrypt, decrypt, or upload |
-| `StorageError` | Any S3/R2 HTTP failure; wraps the underlying network or service error in `.cause` |
+| `AuthenticationError` | Record authentication failed; the data, key, or associated data may be wrong |
+| `FormatError` | Bad preamble magic, unsupported version, truncated record, oversized record, or bytes after TAG_FINAL |
+| `AbortError` | The provided `AbortSignal` cancelled encryption, upload, a request, or body consumption |
+| `StorageError` | An S3/R2 request or response failed; wraps the underlying error in `.cause` when available |
 
 ## TypeScript Support
 

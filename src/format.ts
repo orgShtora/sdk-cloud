@@ -1,16 +1,30 @@
-import { getHeaderBytes, getPreambleLength } from "./crypto.js";
+import { getHeaderBytes, getPreambleLength, isSodiumReady } from "./crypto.js";
 import { FormatError } from "./types.js";
+import {
+  WIRE_LENGTH_PREFIX_SIZE,
+  WIRE_MAGIC_BYTES,
+  WIRE_MAX_RECORD_BYTES,
+  WIRE_VERSION_V1,
+} from "./wire.js";
 
-export const PREAMBLE_MAGIC = new Uint8Array([0x53, 0x4b, 0x44, 0x43]);
-export const VERSION_V1 = 0x01;
-export const LENGTH_PREFIX_SIZE = 4;
-export const MAX_RECORD_BYTES = 1024 * 1024;
+// Export a copy so callers cannot mutate the magic used by the parser or writer.
+export const PREAMBLE_MAGIC = new Uint8Array(WIRE_MAGIC_BYTES);
+export const VERSION_V1 = WIRE_VERSION_V1;
+export const LENGTH_PREFIX_SIZE = WIRE_LENGTH_PREFIX_SIZE;
+export const MAX_RECORD_BYTES = WIRE_MAX_RECORD_BYTES;
+
+function ensureSodiumReady(): void {
+  if (!isSodiumReady()) {
+    throw new Error("libsodium is not initialized; call and await initSodium() first");
+  }
+}
 
 export function readPreamble(data: Uint8Array): {
   version: number;
   header: Uint8Array;
   rest: Uint8Array;
 } {
+  ensureSodiumReady();
   const preambleLength = getPreambleLength();
   if (data.length < preambleLength) {
     throw new FormatError(
@@ -19,8 +33,8 @@ export function readPreamble(data: Uint8Array): {
   }
 
   // Validate magic
-  for (let i = 0; i < 4; i++) {
-    const expected = PREAMBLE_MAGIC[i]!;
+  for (let i = 0; i < WIRE_MAGIC_BYTES.length; i++) {
+    const expected = WIRE_MAGIC_BYTES[i]!;
     const actual = data[i]!;
     if (actual !== expected) {
       throw new FormatError(
@@ -44,6 +58,7 @@ export function readPreamble(data: Uint8Array): {
 
 /** Write the preamble to a buffer */
 export function writePreamble(header: Uint8Array): Uint8Array {
+  ensureSodiumReady();
   const headerBytes = getHeaderBytes();
   if (header.length !== headerBytes) {
     throw new FormatError(`Header must be ${headerBytes} bytes, got ${header.length}`);
@@ -51,7 +66,7 @@ export function writePreamble(header: Uint8Array): Uint8Array {
 
   const preambleLength = getPreambleLength();
   const preamble = new Uint8Array(preambleLength);
-  preamble.set(PREAMBLE_MAGIC, 0);
+  preamble.set(WIRE_MAGIC_BYTES, 0);
   preamble[4] = VERSION_V1;
   preamble.set(header, 5);
   return preamble;
@@ -62,6 +77,10 @@ export function readRecord(
   data: Uint8Array,
   offset: number,
 ): { length: number; ciphertext: Uint8Array; nextOffset: number } | null {
+  if (!Number.isInteger(offset) || offset < 0 || offset > data.length) {
+    throw new FormatError("Record offset must be an integer within the data bounds");
+  }
+
   // Validate-before-read: inspect only the 4-byte length prefix before touching
   // anything else. An oversized value here must never trigger a large allocation.
   if (offset + LENGTH_PREFIX_SIZE > data.length) {
@@ -96,6 +115,7 @@ export function readRecord(
  * Layout: preamble || record plaintext position (uint32 BE).
  */
 export function buildRecordAd(preamble: Uint8Array, position: bigint): Uint8Array {
+  ensureSodiumReady();
   const preambleLength = getPreambleLength();
   if (preamble.length !== preambleLength) {
     throw new FormatError(`Preamble must be ${preambleLength} bytes, got ${preamble.length}`);
@@ -116,8 +136,12 @@ export function buildRecordAd(preamble: Uint8Array, position: bigint): Uint8Arra
   return ad;
 }
 
-/** Encode a plaintext chunk into a length-prefixed record */
+/** Encode ciphertext into a length-prefixed record */
 export function encodeRecord(ciphertext: Uint8Array): Uint8Array {
+  if (ciphertext.length > MAX_RECORD_BYTES) {
+    throw new FormatError(`Record too large: ${ciphertext.length} bytes (max ${MAX_RECORD_BYTES})`);
+  }
+
   const result = new Uint8Array(LENGTH_PREFIX_SIZE + ciphertext.length);
   result.set(
     [

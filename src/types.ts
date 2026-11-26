@@ -1,7 +1,5 @@
 export interface KeyProvider {
   generateKey(): Promise<Uint8Array>;
-
-  resolveKey(envelope: string): Promise<Uint8Array>;
 }
 
 export interface CryptoOptions {
@@ -35,7 +33,7 @@ export type S3Credentials =
 export interface UploadInput {
   bucket: string;
   key: string;
-  body: ReadableStream<Uint8Array> | Uint8Array;
+  body: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array> | Uint8Array;
 
   contentType?: string;
 
@@ -43,6 +41,8 @@ export interface UploadInput {
 
   signal?: AbortSignal;
 }
+
+export type PresignedUploadInput = Pick<UploadInput, "bucket" | "key" | "contentType" | "metadata">;
 
 export interface UploadResult {
   etag: string;
